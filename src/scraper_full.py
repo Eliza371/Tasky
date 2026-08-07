@@ -149,34 +149,40 @@ def scrape_devpost(limit=30):
     return results
 
 
-def scrape_remoteok(limit=20):
-    """Scrape RemoteOK for remote gigs/jobs.
+def scrape_remotive(limit=100):
+    """Scrape Remotive's public API for remote freelance/contract gigs.
 
-    The public API returns a JSON array; first element is metadata, rest are
-    listings. Filter by keywords to surface bounty/freelance-like roles.
+    Remotive's feed is mostly full-time roles, which aren't "quick earning
+    opportunities", so we keep only `freelance` and `contract` job types. The
+    API is a documented public JSON endpoint (no auth), which survives cloud
+    IPs far better than RemoteOK/Reddit.
     """
     results = []
     headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
-    url = "https://remoteok.com/api"
+    url = f"https://remotive.com/api/remote-jobs?limit={limit}"
     resp = requests.get(url, headers=headers, timeout=TIMEOUT)
     resp.raise_for_status()
-    data = resp.json()
-    # First item is metadata; actual listings start at index 1.
-    listings = data[1 : limit + 1] if len(data) > 1 else []
-    for job in listings:
-        title = (job.get("position") or "").strip()
+    for job in resp.json().get("jobs", []):
+        title = (job.get("title") or "").strip()
         link = job.get("url") or ""
-        tags = " ".join(job.get("tags") or []).lower()
-        # RemoteOK is very broad; filter by keywords to focus on relevant roles.
-        if not title or not link or not _matches(title + " " + tags):
+        if not title or not link:
             continue
+        # Keep only gig-shaped work; skip full_time/part_time salaried roles.
+        if job.get("job_type") not in ("freelance", "contract"):
+            continue
+        salary = (job.get("salary") or "").strip()
+        company = (job.get("company_name") or "").strip()
+        label = f"{title}{(' @ ' + company) if company else ''}"
         results.append(
             {
-                "title": title,
-                "url": f"https://remoteok.com{link}" if link.startswith("/") else link,
-                "source": "remoteok",
+                "title": f"{label}{(' — ' + salary) if salary else ''}",
+                "url": link,
+                "source": "remotive",
                 "type": "freelance",
                 "currency": "USD",
+                # publication_date is when it was posted, not a due date, so no
+                # deadline here — Remotive gigs don't expose one.
+                "deadline": None,
             }
         )
     return results
@@ -227,11 +233,17 @@ def scrape_superteam(limit=25):
 
 
 # Registry of active scrapers. Add new callables here to extend coverage
-# (e.g. Immunefi) without touching scrape_all().
+# without touching scrape_all().
+#
+# Source health (as of last review):
+#   devpost   — reliable public JSON API, hackathons w/ deadlines
+#   superteam — reliable public JSON API, crypto bounties w/ deadlines
+#   remotive  — reliable public JSON API, remote freelance/contract gigs
+#   reddit    — RSS; rate-limited (429) from datacenter/cloud IPs, best-effort
 SCRAPERS = (
     ("reddit", scrape_reddit),
     ("devpost", scrape_devpost),
-    ("remoteok", scrape_remoteok),
+    ("remotive", scrape_remotive),
     ("superteam", scrape_superteam),
 )
 

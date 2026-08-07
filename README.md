@@ -165,7 +165,7 @@ copy your local `tasky.db` to `/data/tasky.db` on the volume.
 - **Crypto** — Reddit r/cryptocurrency, r/web3 (airdrops, quests, learn-and-earn)
 - **Hackathons** — Devpost (open online hackathons with prizes)
 - **Bounties** — detected across all sources by keyword (bounty/reward/grant)
-- **Freelance/Tasks** — RemoteOK gigs, Reddit r/forhire, r/slavelabour
+- **Freelance/Tasks** — Remotive (remote freelance/contract gigs), Reddit r/forhire, r/slavelabour
 
 ## Test the scrapers without Telegram
 
