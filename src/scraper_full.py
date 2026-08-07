@@ -188,6 +188,55 @@ def scrape_remotive(limit=100):
     return results
 
 
+def scrape_pasiflora():
+    """Scrape Pasiflora AI's public jobs API for paid AI-training expert work.
+
+    Pasiflora pays credentialed experts to validate/annotate AI training data
+    across ~17 domains (Healthcare, Technology, Finance, Creative & Media, ...).
+    The `/api/jobs` endpoint is public JSON (no auth) and every listing carries a
+    pay range. Individual job pages are login-gated (404 unauthenticated), so we
+    link to the public jobs listing instead.
+
+    Category routing: "Creative & Media" jobs go to the `creator` category;
+    everything else is a paid expert `freelance` gig.
+    """
+    results = []
+    headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
+    url = "https://www.pasifloraai.com/api/jobs"
+    resp = requests.get(url, headers=headers, timeout=TIMEOUT)
+    resp.raise_for_status()
+    resp.encoding = "utf-8"
+    for job in resp.json().get("jobs", []):
+        if job.get("status") != "active":
+            continue
+        title = (job.get("title") or "").strip()
+        if not title:
+            continue
+        slug = (job.get("slug") or "").strip()
+        category = (job.get("category") or "").strip()
+        pay = (job.get("pay_range") or "").strip()
+        type_ = "creator" if category == "Creative & Media" else "freelance"
+        label = f"{title}{(' (' + category + ')') if category else ''}"
+        # Job pages are login-gated, so all links point at the public jobs
+        # listing. A per-slug #fragment keeps each row's URL unique (the DB
+        # dedups on url) without inventing a page that 404s.
+        job_url = "https://www.pasifloraai.com/dashboard/jobs"
+        if slug:
+            job_url += f"#{slug}"
+        results.append(
+            {
+                "title": f"{label}{(' — ' + pay) if pay else ''}",
+                "url": job_url,
+                "source": "pasiflora",
+                "type": type_,
+                "currency": "USD",
+                # No due date in the feed; these are ongoing openings.
+                "deadline": None,
+            }
+        )
+    return results
+
+
 def scrape_superteam(limit=25):
     """Scrape Superteam Earn for crypto bounties and grants.
 
@@ -239,12 +288,14 @@ def scrape_superteam(limit=25):
 #   devpost   — reliable public JSON API, hackathons w/ deadlines
 #   superteam — reliable public JSON API, crypto bounties w/ deadlines
 #   remotive  — reliable public JSON API, remote freelance/contract gigs
+#   pasiflora — reliable public JSON API, paid AI-training expert jobs (+creator)
 #   reddit    — RSS; rate-limited (429) from datacenter/cloud IPs, best-effort
 SCRAPERS = (
     ("reddit", scrape_reddit),
     ("devpost", scrape_devpost),
     ("remotive", scrape_remotive),
     ("superteam", scrape_superteam),
+    ("pasiflora", scrape_pasiflora),
 )
 
 

@@ -65,7 +65,7 @@ opportunities to every subscriber.
 | `/start` | Intro and help (shows your chat id) |
 | `/id` | Show your chat id |
 | `/redeem CODE` | Unlock the bot with an access code |
-| `/subscribe` | Choose categories via buttons: 🪙 Crypto, 💻 Hackathons, 🎯 Bounties, 💼 Freelance/Tasks |
+| `/subscribe` | Choose categories via buttons: 🪙 Crypto, 💻 Hackathons, 🎯 Bounties, 💼 Freelance/Tasks, 🎨 Creator |
 | `/mysubs` | Show your current categories |
 | `/unsubscribe` | Stop all notifications |
 | `/latest` | Show the 10 most recent finds |
@@ -165,7 +165,10 @@ copy your local `tasky.db` to `/data/tasky.db` on the volume.
 - **Crypto** — Reddit r/cryptocurrency, r/web3 (airdrops, quests, learn-and-earn)
 - **Hackathons** — Devpost (open online hackathons with prizes)
 - **Bounties** — detected across all sources by keyword (bounty/reward/grant)
-- **Freelance/Tasks** — Remotive (remote freelance/contract gigs), Reddit r/forhire, r/slavelabour
+- **Freelance/Tasks** — Remotive (remote freelance/contract gigs), Reddit r/forhire,
+  r/slavelabour, Pasiflora AI (paid AI-training expert jobs across ~17 domains)
+- **Creator** — Pasiflora AI "Creative & Media" expert jobs (film/video, music,
+  game design, graphic design, photography, editorial)
 
 ## Test the scrapers without Telegram
 

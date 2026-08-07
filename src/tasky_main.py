@@ -95,6 +95,7 @@ CATEGORY_LABELS = {
     "hackathon": "💻 Hackathons",
     "bounty": "🎯 Bounties",
     "freelance": "💼 Freelance/Tasks",
+    "creator": "🎨 Creator (UGC/content)",
 }
 
 
