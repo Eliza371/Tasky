@@ -25,6 +25,19 @@ def _strip_html(value):
     """Turn Devpost's '<span ...>2,000,000 </span>' into clean text."""
     return " ".join(_TAG_RE.sub("", str(value)).split())
 
+
+def _iso_to_date(value):
+    """Normalize an ISO-8601 timestamp like '2026-09-01T23:59:59.000Z' to a
+    clean 'YYYY-MM-DD' date. Returns None for empty/unparseable values."""
+    if not value:
+        return None
+    text = str(value).strip()
+    # Superteam sends e.g. '2026-09-01T23:59:59.000Z' — the date is the first
+    # 10 chars. Validate the shape before trusting it.
+    if len(text) >= 10 and text[4] == "-" and text[7] == "-":
+        return text[:10]
+    return text
+
 # Keywords that mark a post as an "earning opportunity". Reddit is noisy, so
 # we filter titles; Devpost hackathons are all relevant by definition.
 KEYWORDS = (
@@ -120,6 +133,9 @@ def scrape_devpost(limit=30):
         if amount:
             # prize_amount arrives as HTML like "<span>$</span>10,000"
             prize = _strip_html(amount)
+        # Devpost gives a submission window like "Aug 01 - Sep 30, 2026";
+        # the end of that window is the effective deadline.
+        deadline = _strip_html(h.get("submission_period_dates") or "") or None
         results.append(
             {
                 "title": f"{title}{(' — ' + prize) if prize else ''}",
@@ -127,6 +143,7 @@ def scrape_devpost(limit=30):
                 "source": "devpost",
                 "type": "hackathon",
                 "currency": "USD",
+                "deadline": deadline,
             }
         )
     return results
@@ -195,6 +212,7 @@ def scrape_superteam(limit=25):
             reward = it.get("rewardAmount")
             token = it.get("token") or ""
             prize = f" — {reward:,} {token}".rstrip() if reward else ""
+            deadline = _iso_to_date(it.get("deadline"))
             results.append(
                 {
                     "title": f"{title}{prize}",
@@ -202,6 +220,7 @@ def scrape_superteam(limit=25):
                     "source": f"superteam/{listing_type}",
                     "type": "bounty",
                     "currency": "Crypto",
+                    "deadline": deadline,
                 }
             )
     return results

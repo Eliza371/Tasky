@@ -28,9 +28,16 @@ def init():
             type TEXT,
             currency TEXT,
             posted INTEGER,
-            notified INTEGER DEFAULT 0
+            notified INTEGER DEFAULT 0,
+            deadline TEXT
         )"""
     )
+    # Migration: add deadline column to pre-existing task tables. Kept at the
+    # end of the row so freshly-created and migrated tables share one layout
+    # (SQLite ALTER always appends), i.e. SELECT * index 8 is always deadline.
+    tcols = [r[1] for r in c.execute("PRAGMA table_info(tasks)").fetchall()]
+    if "deadline" not in tcols:
+        c.execute("ALTER TABLE tasks ADD COLUMN deadline TEXT")
     c.execute(
         """CREATE TABLE IF NOT EXISTS subscribers (
             chat_id INTEGER PRIMARY KEY,
@@ -71,14 +78,18 @@ def init():
 CATEGORIES = ("crypto", "hackathon", "bounty", "freelance")
 
 
-def insert(title, url, source, type_, currency="USD/Crypto"):
-    """Insert an opportunity. Returns True if it was new, False if a duplicate."""
+def insert(title, url, source, type_, currency="USD/Crypto", deadline=None):
+    """Insert an opportunity. Returns True if it was new, False if a duplicate.
+
+    `deadline` is an optional human-readable due date/time (e.g. "2026-09-01"
+    or "Sep 1, 2026"); None for sources that don't expose one.
+    """
     conn = _connect()
     c = conn.cursor()
     c.execute(
-        "INSERT OR IGNORE INTO tasks (title, url, source, type, currency, posted, notified) "
-        "VALUES (?,?,?,?,?,?,0)",
-        (title, url, source, type_, currency, int(time.time())),
+        "INSERT OR IGNORE INTO tasks (title, url, source, type, currency, posted, notified, deadline) "
+        "VALUES (?,?,?,?,?,?,0,?)",
+        (title, url, source, type_, currency, int(time.time()), deadline),
     )
     conn.commit()
     inserted = c.rowcount > 0
@@ -121,7 +132,7 @@ def get_unnotified():
     """Rows that have not yet been pushed to subscribers."""
     conn = _connect()
     c = conn.cursor()
-    c.execute("SELECT id, title, url, source, type, currency, posted FROM tasks WHERE notified=0 ORDER BY posted ASC")
+    c.execute("SELECT id, title, url, source, type, currency, posted, deadline FROM tasks WHERE notified=0 ORDER BY posted ASC")
     rows = c.fetchall()
     conn.close()
     return rows

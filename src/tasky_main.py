@@ -73,6 +73,10 @@ MAX_GENCODE = 20
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s", level=logging.INFO
 )
+# httpx logs every Telegram API request at INFO, and the request URL embeds the
+# bot token (…/bot<TOKEN>/getUpdates). Quiet it to WARNING so the token never
+# lands in the logs (Railway, files, stdout).
+logging.getLogger("httpx").setLevel(logging.WARNING)
 log = logging.getLogger("tasky")
 
 # Shown to any chat without access that hits a gated command. `{chat_id}` is
@@ -95,8 +99,11 @@ CATEGORY_LABELS = {
 
 
 # --- Formatting -------------------------------------------------------------
-def format_item(title, url, source):
-    return f"🔔 *{_escape(title)}*\n_{_escape(source)}_\n{url}"
+def format_item(title, url, source, deadline=None):
+    line = f"🔔 *{_escape(title)}*\n_{_escape(source)}_"
+    if deadline:
+        line += f"\n⏳ Deadline: {_escape(str(deadline))}"
+    return f"{line}\n{url}"
 
 
 def _escape(text):
@@ -309,8 +316,8 @@ async def cmd_latest(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not rows:
         await update.message.reply_text("Nothing yet — check back soon.")
         return
-    # get_new returns full rows: id, title, url, source, type, currency, posted, notified
-    lines = [format_item(r[1], r[2], r[3]) for r in rows]
+    # get_new returns full rows: id, title, url, source, type, currency, posted, notified, deadline
+    lines = [format_item(r[1], r[2], r[3], r[8]) for r in rows]
     await update.message.reply_text(
         "\n\n".join(lines), parse_mode=ParseMode.MARKDOWN, disable_web_page_preview=True
     )
@@ -346,13 +353,14 @@ async def cmd_available(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Build a flat list of message "blocks" (a category header or a task item).
     # We then pack blocks into messages under Telegram's 4096-char limit so a
     # long list is split across several messages instead of failing to send.
+    # Row layout: id, title, url, source, type, currency, posted, notified, deadline
     blocks = []
     for cat in db.CATEGORIES:
         items = by_cat.get(cat)
         if not items:
             continue
         blocks.append(f"*{_escape(CATEGORY_LABELS[cat])}* ({len(items)})")
-        blocks.extend(format_item(it[1], it[2], it[3]) for it in items)
+        blocks.extend(format_item(it[1], it[2], it[3], it[8]) for it in items)
 
     for chunk in _pack_blocks(blocks):
         await update.message.reply_text(
@@ -472,7 +480,10 @@ async def poll_job(context: ContextTypes.DEFAULT_TYPE):
     items = scrape_all()
     new_count = 0
     for it in items:
-        if db.insert(it["title"], it["url"], it["source"], it["type"], it.get("currency", "USD/Crypto")):
+        if db.insert(
+            it["title"], it["url"], it["source"], it["type"],
+            it.get("currency", "USD/Crypto"), it.get("deadline"),
+        ):
             new_count += 1
     log.info("Scraped %d items, %d new", len(items), new_count)
 
@@ -482,9 +493,10 @@ async def poll_job(context: ContextTypes.DEFAULT_TYPE):
         return
 
     for row in unnotified:
-        # get_unnotified: id, title, url, source, type, currency, posted
+        # get_unnotified: id, title, url, source, type, currency, posted, deadline
         task_id, title, url, source, type_ = row[0], row[1], row[2], row[3], row[4]
-        text = format_item(title, url, source)
+        deadline = row[7]
+        text = format_item(title, url, source, deadline)
         for chat_id, cats in subscribers:
             if type_ not in cats:
                 continue  # this subscriber didn't opt into this category
