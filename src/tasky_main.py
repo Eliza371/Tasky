@@ -337,19 +337,22 @@ async def cmd_available(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    rows = db.get_by_categories(cats, limit=50)
-    if not rows:
+    # Fetch a fair slice PER category, not one combined top-N. A single
+    # ORDER BY posted DESC LIMIT N lets a bulk source (e.g. Pasiflora inserts
+    # ~120 rows in one poll cycle with near-identical `posted`) swamp the list
+    # and crowd every other category out of the cut. Querying each category
+    # independently guarantees each one shows its own recent items.
+    by_cat = {}
+    for cat in cats:
+        cat_rows = db.get_by_categories([cat], limit=15)
+        if cat_rows:
+            by_cat[cat] = cat_rows
+    if not by_cat:
         picked = ", ".join(CATEGORY_LABELS[c] for c in db.CATEGORIES if c in cats)
         await update.message.reply_text(
             f"No tasks yet for your categories ({picked}). I'll notify you as they land."
         )
         return
-
-    # Group rows by category, preserving the canonical category order.
-    # Row layout: id, title, url, source, type, currency, posted, notified
-    by_cat = {}
-    for r in rows:
-        by_cat.setdefault(r[4], []).append(r)
 
     # Build a flat list of message "blocks" (a category header or a task item).
     # We then pack blocks into messages under Telegram's 4096-char limit so a

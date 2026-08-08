@@ -120,7 +120,7 @@ def get_by_categories(categories, limit=20):
     placeholders = ",".join("?" for _ in cats)
     c.execute(
         f"SELECT * FROM tasks WHERE type IN ({placeholders}) "
-        "ORDER BY posted DESC LIMIT ?",
+        "ORDER BY posted DESC, id DESC LIMIT ?",
         (*cats, limit),
     )
     rows = c.fetchall()
