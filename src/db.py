@@ -42,7 +42,7 @@ def init():
         """CREATE TABLE IF NOT EXISTS subscribers (
             chat_id INTEGER PRIMARY KEY,
             added INTEGER,
-            categories TEXT DEFAULT 'crypto,hackathon,bounty,freelance,creator'
+            categories TEXT DEFAULT 'crypto,hackathon,bounty,freelance,creator,internship'
         )"""
     )
     # Migration: add categories column to pre-existing subscriber tables.
@@ -75,7 +75,7 @@ def init():
 
 # All opportunity categories the bot understands. A task's `type` field must be
 # one of these; a subscriber's `categories` is a subset.
-CATEGORIES = ("crypto", "hackathon", "bounty", "freelance", "creator")
+CATEGORIES = ("crypto", "hackathon", "bounty", "freelance", "creator", "internship")
 
 
 def insert(title, url, source, type_, currency="USD/Crypto", deadline=None):

@@ -65,7 +65,7 @@ opportunities to every subscriber.
 | `/start` | Intro and help (shows your chat id) |
 | `/id` | Show your chat id |
 | `/redeem CODE` | Unlock the bot with an access code |
-| `/subscribe` | Choose categories via buttons: 🪙 Crypto, 💻 Hackathons, 🎯 Bounties, 💼 Freelance/Tasks, 🎨 Creator |
+| `/subscribe` | Choose categories via buttons: 🪙 Crypto, 💻 Hackathons, 🎯 Bounties, 💼 Freelance/Tasks, 🎨 Creator, 🎓 Internships |
 | `/mysubs` | Show your current categories |
 | `/unsubscribe` | Stop all notifications |
 | `/latest` | Show the 10 most recent finds |
@@ -169,6 +169,8 @@ copy your local `tasky.db` to `/data/tasky.db` on the volume.
   r/slavelabour, Pasiflora AI (paid AI-training expert jobs across ~17 domains)
 - **Creator** — Pasiflora AI "Creative & Media" expert jobs (film/video, music,
   game design, graphic design, photography, editorial)
+- **Internships** — The Muse (7,900+ internships across companies worldwide,
+  via its public `level=Internship` API)
 
 ## Test the scrapers without Telegram
 

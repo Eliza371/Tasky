@@ -281,6 +281,50 @@ def scrape_superteam(limit=25):
     return results
 
 
+def scrape_themuse(pages=2):
+    """Scrape The Muse's public jobs API for internships.
+
+    The Muse exposes a documented public JSON API with a native
+    `level=Internship` filter, so no title-guessing is needed — every result
+    is genuinely an internship. ~7,900 internships are available; we take the
+    first `pages` (20 per page) newest each cycle. No auth, survives cloud IPs.
+
+    Each job carries a real company name and a `refs.landing_page` URL that is
+    unique per posting (good dedup key). No deadline is exposed — these are
+    ongoing openings — so `deadline` is None.
+    """
+    results = []
+    headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
+    for page in range(1, pages + 1):
+        url = f"https://www.themuse.com/api/public/jobs?level=Internship&page={page}"
+        try:
+            resp = requests.get(url, headers=headers, timeout=TIMEOUT)
+            resp.raise_for_status()
+            resp.encoding = "utf-8"
+            payload = resp.json()
+        except Exception as e:
+            print(f"[scraper] themuse page {page} skipped: {e}")
+            continue
+        for job in payload.get("results", []):
+            name = (job.get("name") or "").strip()
+            landing = ((job.get("refs") or {}).get("landing_page") or "").strip()
+            if not name or not landing:
+                continue
+            company = ((job.get("company") or {}).get("name") or "").strip()
+            label = f"{name}{(' @ ' + company) if company else ''}"
+            results.append(
+                {
+                    "title": label,
+                    "url": landing,
+                    "source": "themuse",
+                    "type": "internship",
+                    "currency": "USD",
+                    "deadline": None,
+                }
+            )
+    return results
+
+
 # Registry of active scrapers. Add new callables here to extend coverage
 # without touching scrape_all().
 #
@@ -289,6 +333,7 @@ def scrape_superteam(limit=25):
 #   superteam — reliable public JSON API, crypto bounties w/ deadlines
 #   remotive  — reliable public JSON API, remote freelance/contract gigs
 #   pasiflora — reliable public JSON API, paid AI-training expert jobs (+creator)
+#   themuse   — reliable public JSON API, internships (native Internship filter)
 #   reddit    — RSS; rate-limited (429) from datacenter/cloud IPs, best-effort
 SCRAPERS = (
     ("reddit", scrape_reddit),
@@ -296,6 +341,7 @@ SCRAPERS = (
     ("remotive", scrape_remotive),
     ("superteam", scrape_superteam),
     ("pasiflora", scrape_pasiflora),
+    ("themuse", scrape_themuse),
 )
 
 
