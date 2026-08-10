@@ -38,11 +38,18 @@ def init():
     tcols = [r[1] for r in c.execute("PRAGMA table_info(tasks)").fetchall()]
     if "deadline" not in tcols:
         c.execute("ALTER TABLE tasks ADD COLUMN deadline TEXT")
+    # Migration: Immunefi listings were originally stored as type='bounty' but
+    # now belong to the dedicated 'bug_bounty' category. Retype existing rows so
+    # they surface under the new category (new inserts already use bug_bounty,
+    # and the URL is unchanged so INSERT OR IGNORE would never update them).
+    c.execute(
+        "UPDATE tasks SET type='bug_bounty' WHERE source='immunefi' AND type='bounty'"
+    )
     c.execute(
         """CREATE TABLE IF NOT EXISTS subscribers (
             chat_id INTEGER PRIMARY KEY,
             added INTEGER,
-            categories TEXT DEFAULT 'crypto,hackathon,bounty,freelance,creator,internship'
+            categories TEXT DEFAULT 'crypto,hackathon,bounty,bug_bounty,freelance,creator,internship'
         )"""
     )
     # Migration: add categories column to pre-existing subscriber tables.
@@ -75,7 +82,7 @@ def init():
 
 # All opportunity categories the bot understands. A task's `type` field must be
 # one of these; a subscriber's `categories` is a subset.
-CATEGORIES = ("crypto", "hackathon", "bounty", "freelance", "creator", "internship")
+CATEGORIES = ("crypto", "hackathon", "bounty", "bug_bounty", "freelance", "creator", "internship")
 
 
 def insert(title, url, source, type_, currency="USD/Crypto", deadline=None):

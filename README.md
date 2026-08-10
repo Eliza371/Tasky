@@ -65,7 +65,7 @@ opportunities to every subscriber.
 | `/start` | Intro and help (shows your chat id) |
 | `/id` | Show your chat id |
 | `/redeem CODE` | Unlock the bot with an access code |
-| `/subscribe` | Choose categories via buttons: 🪙 Crypto, 💻 Hackathons, 🎯 Bounties, 💼 Freelance/Tasks, 🎨 Creator, 🎓 Internships |
+| `/subscribe` | Choose categories via buttons: 🪙 Crypto, 💻 Hackathons, 🎯 Bounties, 🐛 Bug Bounties, 💼 Freelance/Tasks, 🎨 Creator, 🎓 Internships |
 | `/mysubs` | Show your current categories |
 | `/unsubscribe` | Stop all notifications |
 | `/latest` | Show the 10 most recent finds |
@@ -164,13 +164,39 @@ copy your local `tasky.db` to `/data/tasky.db` on the volume.
 
 - **Crypto** — Reddit r/cryptocurrency, r/web3 (airdrops, quests, learn-and-earn)
 - **Hackathons** — Devpost (open online hackathons with prizes)
-- **Bounties** — detected across all sources by keyword (bounty/reward/grant)
+- **Bounties** — Superteam Earn (crypto bounties/grants), Dework (open rewarded
+  DAO tasks), WizzHQ (Web3 bounties), plus anything keyword-detected across other
+  sources (bounty/reward/grant)
+- **Bug Bounties** — Immunefi (security/bug-bounty programs, rewards up to the
+  program max), via a community-maintained mirror of the program list
 - **Freelance/Tasks** — Remotive (remote freelance/contract gigs), Reddit r/forhire,
   r/slavelabour, Pasiflora AI (paid AI-training expert jobs across ~17 domains)
 - **Creator** — Pasiflora AI "Creative & Media" expert jobs (film/video, music,
-  game design, graphic design, photography, editorial)
+  game design, graphic design, photography, editorial), WizzHQ `content` bounties
 - **Internships** — The Muse (7,900+ internships across companies worldwide,
-  via its public `level=Internship` API)
+  via its public `level=Internship` API), web3.career (web3 internships, needs
+  `WEB3CAREER_TOKEN`); items from any source whose title names an
+  internship/fellowship are also surfaced here
+
+### Source reliability notes
+
+Some Web3 platforms don't offer a clean public feed, so their reliability varies:
+
+- **WizzHQ** — `wizzhq.xyz/api/bounties` is public JSON but sits behind Cloudflare
+  (the browser User-Agent is required) and currently returns only *past-deadline*
+  listings, which are filtered out; it contributes items once live bounties are
+  posted.
+- **Dework** — `api.deworkxyz.com/graphql` is public but throttled by a WAF that
+  can stall on large queries, so the query is kept small and given a wider
+  timeout. Best-effort: a stalled cycle is logged and skipped.
+- **Immunefi** — sourced from a community-maintained GitHub-raw mirror of the
+  program list (public, no key). Most programs are standing (no deadline).
+
+Many other requested platforms (Whop, Arena, Klout, Hashly, Gitcoin, Layer3,
+Scouts, etc.) were evaluated but are **not integrated**: they require login/API
+keys, are currently down, or block automated clients. See the git history / the
+scraper module header for the per-platform verdict.
+
 
 ## Test the scrapers without Telegram
 

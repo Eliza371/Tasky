@@ -454,7 +454,7 @@ def scrape_immunefi(limit=60):
                 "title": f"{name}{prize}",
                 "url": f"https://immunefi.com/bug-bounty/{slug}/",
                 "source": "immunefi",
-                "type": "bounty",
+                "type": "bug_bounty",
                 "currency": "Crypto",
                 "deadline": deadline,
             }

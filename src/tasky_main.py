@@ -94,6 +94,7 @@ CATEGORY_LABELS = {
     "crypto": "🪙 Crypto (quests/airdrops)",
     "hackathon": "💻 Hackathons",
     "bounty": "🎯 Bounties",
+    "bug_bounty": "🐛 Bug Bounties",
     "freelance": "💼 Freelance/Tasks",
     "creator": "🎨 Creator (UGC/content)",
     "internship": "🎓 Internships",
