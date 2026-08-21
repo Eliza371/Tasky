@@ -13,7 +13,11 @@ DB = os.environ.get("TASKY_DB", _DEFAULT_DB)
 
 
 def _connect():
-    return sqlite3.connect(DB)
+    conn = sqlite3.connect(DB, timeout=30)
+    conn.execute("PRAGMA busy_timeout=30000")
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA foreign_keys=ON")
+    return conn
 
 
 def init():
@@ -38,18 +42,11 @@ def init():
     tcols = [r[1] for r in c.execute("PRAGMA table_info(tasks)").fetchall()]
     if "deadline" not in tcols:
         c.execute("ALTER TABLE tasks ADD COLUMN deadline TEXT")
-    # Migration: Immunefi listings were originally stored as type='bounty' but
-    # now belong to the dedicated 'bug_bounty' category. Retype existing rows so
-    # they surface under the new category (new inserts already use bug_bounty,
-    # and the URL is unchanged so INSERT OR IGNORE would never update them).
-    c.execute(
-        "UPDATE tasks SET type='bug_bounty' WHERE source='immunefi' AND type='bounty'"
-    )
     c.execute(
         """CREATE TABLE IF NOT EXISTS subscribers (
             chat_id INTEGER PRIMARY KEY,
             added INTEGER,
-            categories TEXT DEFAULT 'crypto,hackathon,bounty,bug_bounty,freelance,creator,internship'
+            categories TEXT DEFAULT 'crypto,hackathon,bounty'
         )"""
     )
     # Migration: add categories column to pre-existing subscriber tables.
@@ -57,7 +54,7 @@ def init():
     if "categories" not in cols:
         c.execute(
             "ALTER TABLE subscribers ADD COLUMN categories TEXT "
-            "DEFAULT 'crypto,hackathon,bounty,freelance'"
+            "DEFAULT 'crypto,hackathon,bounty'"
         )
     # Invite-only gating. `access` records which chats may use the bot;
     # `invite_codes` holds single-use codes (used_by is NULL until redeemed).
@@ -76,13 +73,37 @@ def init():
             used_at INTEGER
         )"""
     )
+    c.execute(
+        """CREATE TABLE IF NOT EXISTS deliveries (
+            task_id INTEGER NOT NULL,
+            chat_id INTEGER NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            sent_at INTEGER,
+            last_error TEXT,
+            PRIMARY KEY(task_id, chat_id),
+            FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
+        )"""
+    )
+    c.execute(
+        """CREATE TABLE IF NOT EXISTS source_runs (
+            source TEXT PRIMARY KEY,
+            last_started INTEGER,
+            last_success INTEGER,
+            last_count INTEGER DEFAULT 0,
+            consecutive_failures INTEGER DEFAULT 0,
+            last_error TEXT
+        )"""
+    )
+    c.execute("CREATE INDEX IF NOT EXISTS idx_tasks_posted ON tasks(posted DESC)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_tasks_type_posted ON tasks(type, posted DESC)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_tasks_deadline ON tasks(deadline)")
     conn.commit()
     conn.close()
 
 
 # All opportunity categories the bot understands. A task's `type` field must be
 # one of these; a subscriber's `categories` is a subset.
-CATEGORIES = ("crypto", "hackathon", "bounty", "bug_bounty", "freelance", "creator", "internship")
+CATEGORIES = ("crypto", "hackathon", "bounty")
 
 
 def insert(title, url, source, type_, currency="USD/Crypto", deadline=None):
@@ -104,10 +125,25 @@ def insert(title, url, source, type_, currency="USD/Crypto", deadline=None):
     return inserted
 
 
-def get_new(limit=20):
+def get_new(limit=20, categories=None):
+    if type_ not in CATEGORIES:
+        return False
     conn = _connect()
     c = conn.cursor()
-    c.execute("SELECT * FROM tasks ORDER BY posted DESC LIMIT ?", (limit,))
+    if categories:
+        cats = [cat for cat in categories if cat in CATEGORIES]
+        placeholders = ",".join("?" for _ in cats)
+        c.execute(
+            f"SELECT * FROM tasks WHERE type IN ({placeholders}) "
+            "AND (deadline IS NULL OR deadline >= date('now')) "
+            "ORDER BY posted DESC LIMIT ?",
+            (*cats, limit),
+        )
+    else:
+        c.execute(
+            "SELECT * FROM tasks WHERE deadline IS NULL OR deadline >= date('now') "
+            "ORDER BY posted DESC LIMIT ?", (limit,)
+        )
     rows = c.fetchall()
     conn.close()
     return rows
@@ -127,6 +163,7 @@ def get_by_categories(categories, limit=20):
     placeholders = ",".join("?" for _ in cats)
     c.execute(
         f"SELECT * FROM tasks WHERE type IN ({placeholders}) "
+        "AND (deadline IS NULL OR deadline >= date('now')) "
         "ORDER BY posted DESC, id DESC LIMIT ?",
         (*cats, limit),
     )
@@ -136,7 +173,7 @@ def get_by_categories(categories, limit=20):
 
 
 def get_unnotified():
-    """Rows that have not yet been pushed to subscribers."""
+    """Legacy task-level query retained for compatibility."""
     conn = _connect()
     c = conn.cursor()
     c.execute("SELECT id, title, url, source, type, currency, posted, deadline FROM tasks WHERE notified=0 ORDER BY posted ASC")
@@ -153,11 +190,88 @@ def mark_notified(task_id):
     conn.close()
 
 
+def get_pending_deliveries():
+    """Return unsent task/subscriber pairs that currently match and have access."""
+    conn = _connect()
+    rows = conn.execute(
+        """SELECT t.id, t.title, t.url, t.source, t.type, t.currency,
+                  t.posted, t.deadline, s.chat_id
+           FROM tasks t
+           JOIN subscribers s
+             ON instr(',' || s.categories || ',', ',' || t.type || ',') > 0
+           JOIN access a ON a.chat_id = s.chat_id
+           LEFT JOIN deliveries d ON d.task_id = t.id AND d.chat_id = s.chat_id
+           WHERE d.sent_at IS NULL
+             AND t.posted >= s.added
+             AND (t.deadline IS NULL OR t.deadline >= date('now'))
+           ORDER BY t.posted ASC"""
+    ).fetchall()
+    conn.close()
+    return rows
+
+
+def record_delivery(task_id, chat_id, success, error=None):
+    now = int(time.time())
+    conn = _connect()
+    conn.execute(
+        """INSERT INTO deliveries (task_id, chat_id, attempts, sent_at, last_error)
+           VALUES (?, ?, 1, ?, ?)
+           ON CONFLICT(task_id, chat_id) DO UPDATE SET
+             attempts = deliveries.attempts + 1,
+             sent_at = excluded.sent_at,
+             last_error = excluded.last_error""",
+        (task_id, chat_id, now if success else None, None if success else str(error)[:500]),
+    )
+    conn.commit()
+    conn.close()
+
+
+def cleanup_old(days=90):
+    cutoff = int(time.time()) - max(1, int(days)) * 86400
+    conn = _connect()
+    conn.execute("DELETE FROM tasks WHERE posted < ?", (cutoff,))
+    conn.commit()
+    conn.close()
+
+
+def record_source_run(source, count=None, error=None):
+    now = int(time.time())
+    conn = _connect()
+    conn.execute(
+        """INSERT INTO source_runs
+             (source, last_started, last_success, last_count, consecutive_failures, last_error)
+           VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT(source) DO UPDATE SET
+             last_started = excluded.last_started,
+             last_success = CASE WHEN excluded.last_error IS NULL
+                                 THEN excluded.last_started ELSE source_runs.last_success END,
+             last_count = CASE WHEN excluded.last_error IS NULL
+                               THEN excluded.last_count ELSE source_runs.last_count END,
+             consecutive_failures = CASE WHEN excluded.last_error IS NULL
+                                         THEN 0 ELSE source_runs.consecutive_failures + 1 END,
+             last_error = excluded.last_error""",
+        (source, now, now if error is None else None, count or 0,
+         0 if error is None else 1, error),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_source_health():
+    conn = _connect()
+    rows = conn.execute(
+        "SELECT source,last_success,last_count,consecutive_failures,last_error "
+        "FROM source_runs ORDER BY source"
+    ).fetchall()
+    conn.close()
+    return rows
+
+
 def add_subscriber(chat_id, categories=None):
     """Subscribe a chat. `categories` is a list; defaults to all."""
     if categories is None:
         categories = list(CATEGORIES)
-    cats = ",".join(categories)
+    cats = ",".join(c for c in categories if c in CATEGORIES)
     conn = _connect()
     c = conn.cursor()
     c.execute(
@@ -188,7 +302,7 @@ def get_categories(chat_id):
     conn.close()
     if not row or not row[0]:
         return []
-    return [x for x in row[0].split(",") if x]
+    return [x for x in row[0].split(",") if x in CATEGORIES]
 
 
 def get_subscribers():
@@ -200,7 +314,7 @@ def get_subscribers():
     conn.close()
     result = []
     for chat_id, cats in rows:
-        cat_list = [x for x in (cats or "").split(",") if x]
+        cat_list = [x for x in (cats or "").split(",") if x in CATEGORIES]
         result.append((chat_id, cat_list))
     return result
 
@@ -278,9 +392,12 @@ def redeem_code(code, chat_id):
         return "used"
     now = int(time.time())
     c.execute(
-        "UPDATE invite_codes SET used_by=?, used_at=? WHERE code=?",
+        "UPDATE invite_codes SET used_by=?, used_at=? WHERE code=? AND used_by IS NULL",
         (chat_id, now, code),
     )
+    if c.rowcount != 1:
+        conn.close()
+        return "used"
     c.execute(
         "INSERT INTO access (chat_id, granted, via) VALUES (?,?,?) "
         "ON CONFLICT(chat_id) DO UPDATE SET granted=excluded.granted, via=excluded.via",

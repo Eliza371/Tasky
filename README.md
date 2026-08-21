@@ -1,12 +1,11 @@
 # Tasky
 
-A Telegram bot that monitors and instantly notifies subscribers of quick
-earning opportunities: crypto quests, bounties, airdrops, learn-and-earn,
-hackathons, and developer bounties.
+A Telegram bot that monitors paid opportunities and sends category-filtered
+alerts. The default feed favors reliable structured sources over maximum
+coverage.
 
-**Active sources:** Reddit (r/cryptocurrency, r/web3) and Devpost hackathons,
-both via their public JSON feeds. New sources plug into `SCRAPERS` in
-`src/scraper_full.py` without touching the rest of the code.
+**Default source:** Devpost. Crypto and bounty sources are opt-in through
+`TASKY_ENABLE_SCRAPERS` until their output quality is verified.
 
 ## Install
 
@@ -113,6 +112,7 @@ any user their id). Only that chat can run the admin commands:
 | `/codes` | List codes that haven't been redeemed yet |
 | `/grant <chat_id>` | Grant access directly, no code needed |
 | `/revoke <chat_id>` | Revoke access and stop that chat's feed |
+| `/health` | Show source success/failure status |
 
 Typical flow: a user messages you their chat id → you `/gencode` and forward the
 code → they `/redeem CODE` → `/subscribe`. Or skip the code entirely with
@@ -162,21 +162,10 @@ copy your local `tasky.db` to `/data/tasky.db` on the volume.
 
 ## Sources by category
 
-- **Crypto** — Reddit r/cryptocurrency, r/web3 (airdrops, quests, learn-and-earn)
+- **Crypto** — optional Reddit, Telegram public previews, and Zealy questboards
+  (the latter requires a key)
 - **Hackathons** — Devpost (open online hackathons with prizes)
-- **Bounties** — Superteam Earn (crypto bounties/grants), Dework (open rewarded
-  DAO tasks), WizzHQ (Web3 bounties), plus anything keyword-detected across other
-  sources (bounty/reward/grant)
-- **Bug Bounties** — Immunefi (security/bug-bounty programs, rewards up to the
-  program max), via a community-maintained mirror of the program list
-- **Freelance/Tasks** — Remotive (remote freelance/contract gigs), Reddit r/forhire,
-  r/slavelabour, Pasiflora AI (paid AI-training expert jobs across ~17 domains)
-- **Creator** — Pasiflora AI "Creative & Media" expert jobs (film/video, music,
-  game design, graphic design, photography, editorial), WizzHQ `content` bounties
-- **Internships** — The Muse (7,900+ internships across companies worldwide,
-  via its public `level=Internship` API), web3.career (web3 internships, needs
-  `WEB3CAREER_TOKEN`); items from any source whose title names an
-  internship/fellowship are also surfaced here
+- **Bounties** — optional Dework and WizzHQ feeds
 
 ### Source reliability notes
 
@@ -191,6 +180,17 @@ Some Web3 platforms don't offer a clean public feed, so their reliability varies
   timeout. Best-effort: a stalled cycle is logged and skipped.
 - **Immunefi** — sourced from a community-maintained GitHub-raw mirror of the
   program list (public, no key). Most programs are standing (no deadline).
+- **Telegram** — reads each channel's public `t.me/s/<channel>` web preview as
+  HTML (no login, no API). Channels come from `TASKY_TG_CHANNELS` (comma-separated
+  handles); unset uses a built-in curated airdrop/quest list. A channel that has
+  its public preview turned off redirects to a join page with no posts and is
+  skipped. Posts are keyword-filtered like Reddit, since channels are chatty.
+- **Zealy** — opt-in and key-gated. Zealy's API is per-community and, since the
+  v2 migration, *every* endpoint (including the `/public/` ones) requires that
+  community's own `x-api-key` — there is no unauthenticated feed. Set the
+  communities to watch in `TASKY_ZEALY_COMMUNITIES` (comma-separated subdomains)
+  and their key in `ZEALY_API_KEY`. Without a key the source is a clean no-op: it
+  logs that it's skipping and never breaks the run. Quests surface under 🪙 Crypto.
 
 Many other requested platforms (Whop, Arena, Klout, Hashly, Gitcoin, Layer3,
 Scouts, etc.) were evaluated but are **not integrated**: they require login/API

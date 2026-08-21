@@ -1,5 +1,5 @@
-# Full scraper module for Tasky
-# Active sources: Reddit (r/cryptocurrency, r/web3), Devpost hackathons.
+# Full scraper module for Tasky. Reliable sources are enabled by default;
+# fragile sources are opt-in through TASKY_ENABLE_SCRAPERS.
 #
 # Each scraper returns a list of dicts:
 #   {"title", "url", "source", "type", "currency"}
@@ -26,6 +26,18 @@ _TAG_RE = re.compile(r"<[^>]+>")
 def _strip_html(value):
     """Turn Devpost's '<span ...>2,000,000 </span>' into clean text."""
     return " ".join(_TAG_RE.sub("", str(value)).split())
+
+
+def _shorten(text, limit=140):
+    """Collapse whitespace and trim to a clean single-line headline.
+
+    Telegram posts can run many paragraphs; we surface only a headline-length
+    slice, cut on a word boundary with an ellipsis when it overflows.
+    """
+    text = " ".join(str(text).split())
+    if len(text) <= limit:
+        return text
+    return text[:limit].rsplit(" ", 1)[0].rstrip() + "…"
 
 
 def _iso_to_date(value):
@@ -612,6 +624,170 @@ def scrape_web3career(limit=100):
     return results
 
 
+# Default public Telegram channels to watch when TASKY_TG_CHANNELS is unset.
+# All verified to expose the public /s/ web preview (no login) at time of
+# writing. Curated airdrop/quest feeds, so most posts are genuine opportunities.
+_DEFAULT_TG_CHANNELS = (
+    "airdrops_io", "airdropinspector", "airdropdetectivee",
+    "airdropalertcom", "airdropfind", "airdropsmob",
+)
+
+
+def scrape_telegram(channels=None, per_channel=20):
+    """Scrape public Telegram channels via their t.me/s/ web preview.
+
+    Telegram serves a channel's recent posts as static HTML at
+    `https://t.me/s/<channel>` — no login, no API token — the same best-effort
+    approach we use for Reddit. Channels are read from the `TASKY_TG_CHANNELS`
+    env var (comma-separated handles, '@' optional); if unset we fall back to a
+    curated list of airdrop/quest feeds.
+
+    A channel with its public preview disabled 302-redirects `/s/<ch>` to
+    `/<ch>` (a join page with zero message wrappers); we detect the empty parse
+    and skip it cleanly. Each post carries a unique `data-post` id ("chan/123"),
+    which yields a stable per-post permalink — an ideal dedup key for the DB.
+
+    Posts are noisy, so titles are keyword-filtered like Reddit and trimmed to a
+    headline. `deadline` is None: a post's timestamp is when it was sent, not a
+    due date.
+    """
+    import os
+    from bs4 import BeautifulSoup
+
+    if channels is None:
+        env = os.environ.get("TASKY_TG_CHANNELS", "")
+        channels = [c.strip().lstrip("@") for c in env.split(",") if c.strip()] \
+            or list(_DEFAULT_TG_CHANNELS)
+
+    results = []
+    headers = {"User-Agent": USER_AGENT}
+    for ch in channels:
+        url = f"https://t.me/s/{ch}"
+        try:
+            resp = requests.get(url, headers=headers, timeout=TIMEOUT)
+            resp.raise_for_status()
+            resp.encoding = "utf-8"
+            soup = BeautifulSoup(resp.text, "html.parser")
+        except Exception as e:
+            # One unreachable/slow channel must not sink the others (t.me can be
+            # sluggish); per-source isolation in scrape_all() is the outer net.
+            print(f"[scraper] telegram/{ch} skipped: {e}")
+            continue
+        msgs = soup.select(".tgme_widget_message")
+        if not msgs:
+            # No message wrappers => preview disabled (redirected to join page).
+            print(f"[scraper] telegram/{ch}: no public preview, skipped")
+            continue
+        # Newest posts are last in the DOM; take the most recent `per_channel`.
+        for m in msgs[-per_channel:]:
+            post = (m.get("data-post") or "").strip()  # e.g. "airdrops_io/1234"
+            text_el = m.select_one(".tgme_widget_message_text")
+            if not post or text_el is None:
+                continue  # media-only post or malformed row
+            title = _shorten(text_el.get_text(" ", strip=True))
+            if not title or not _matches(title):
+                continue
+            results.append(
+                {
+                    "title": title,
+                    "url": f"https://t.me/{post}",
+                    "source": f"telegram/{ch}",
+                    "type": _classify(title, default="crypto"),
+                    "currency": "Crypto",
+                    "deadline": None,
+                }
+            )
+    return results
+
+
+def scrape_zealy(communities=None, limit=50):
+    """Scrape Zealy community questboards for crypto quests.
+
+    Zealy's API is per-community and, as of the v2 migration, **every** endpoint
+    — including the `/public/` ones — requires that community's own `x-api-key`
+    (an unauthenticated call returns 401). There is no true no-key feed, so this
+    source is opt-in and degrades cleanly:
+
+      - Communities come from `TASKY_ZEALY_COMMUNITIES` (comma-separated
+        subdomains). Unset => the source is skipped entirely, like web3career.
+      - `ZEALY_API_KEY`, if set, is sent as `x-api-key`. Without it we still
+        attempt the public endpoint and skip cleanly on 401/403 — the bot never
+        breaks for lack of a key; the source simply stays dormant until one is
+        provided.
+
+    Quests map to the 🪙 `crypto` category. Links use the canonical questboard
+    URL with the quest id in the path so each row dedups uniquely; no reliable
+    public deadline is exposed, so `deadline` stays None unless the quest carries
+    one.
+    """
+    import os
+
+    if communities is None:
+        env = os.environ.get("TASKY_ZEALY_COMMUNITIES", "")
+        communities = [c.strip().strip("/").lstrip("@") for c in env.split(",") if c.strip()]
+    if not communities:
+        print("[scraper] zealy skipped: TASKY_ZEALY_COMMUNITIES not set")
+        return []
+
+    headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
+    api_key = os.environ.get("ZEALY_API_KEY")
+    if api_key:
+        headers["x-api-key"] = api_key
+
+    results = []
+    for sub in communities:
+        url = f"https://api-v2.zealy.io/public/communities/{sub}/quests"
+        try:
+            resp = requests.get(url, headers=headers, timeout=TIMEOUT)
+            if resp.status_code in (401, 403):
+                # Needs this community's x-api-key. Honor the no-key mode: log
+                # once and move on rather than raising.
+                print(f"[scraper] zealy/{sub} skipped: needs ZEALY_API_KEY "
+                      f"({resp.status_code})")
+                continue
+            resp.raise_for_status()
+            resp.encoding = "utf-8"
+            payload = resp.json()
+        except Exception as e:
+            print(f"[scraper] zealy/{sub} skipped: {e}")
+            continue
+
+        # The endpoint may return a flat quest list, a {data|quests: [...]}
+        # wrapper, or modules that each nest a `quests` list. Flatten all shapes.
+        quests = []
+        if isinstance(payload, list):
+            for entry in payload:
+                if isinstance(entry, dict) and isinstance(entry.get("quests"), list):
+                    quests.extend(entry["quests"])  # module -> quests
+                elif isinstance(entry, dict):
+                    quests.append(entry)             # already a quest
+        elif isinstance(payload, dict):
+            quests = payload.get("quests") or payload.get("data") or []
+
+        for q in quests[:limit]:
+            if not isinstance(q, dict):
+                continue
+            # Skip drafts/archived when the flag is present; default to visible.
+            if q.get("published") is False or q.get("archived") is True:
+                continue
+            name = (q.get("name") or q.get("title") or "").strip()
+            qid = str(q.get("id") or "").strip()
+            if not name or not qid:
+                continue
+            deadline = _iso_to_date(q.get("deadline") or q.get("endDate"))
+            results.append(
+                {
+                    "title": name,
+                    "url": f"https://zealy.io/cw/{sub}/questboard/{qid}",
+                    "source": f"zealy/{sub}",
+                    "type": "crypto",
+                    "currency": "Crypto",
+                    "deadline": deadline,
+                }
+            )
+    return results
+
+
 # Registry of active scrapers. Add new callables here to extend coverage
 # without touching scrape_all().
 #
@@ -625,53 +801,47 @@ def scrape_web3career(limit=100):
 #   dework    — public GraphQL, open rewarded bounties; WAF can stall (best-effort)
 #   immunefi  — public GitHub-raw mirror, bug-bounty programs (mostly no deadline)
 #   web3career— official API (needs WEB3CAREER_TOKEN env var), web3 internships
+#   telegram  — t.me/s/ public channel preview (HTML); best-effort, skips
+#               channels with preview disabled. Channels via TASKY_TG_CHANNELS.
+#   zealy     — per-community API; every endpoint needs x-api-key. Opt-in via
+#               TASKY_ZEALY_COMMUNITIES (+ ZEALY_API_KEY); skips cleanly w/o key.
 #   reddit    — RSS; rate-limited (429) from datacenter/cloud IPs, best-effort
-SCRAPERS = (
-    ("reddit", scrape_reddit),
+_OPTIONAL = {
+    "reddit": scrape_reddit,
+    "superteam": scrape_superteam,
+    "wizzhq": scrape_wizzhq,
+    "dework": scrape_dework,
+    "telegram": scrape_telegram,
+    "zealy": scrape_zealy,
+}
+_DEFAULT = (
     ("devpost", scrape_devpost),
-    ("remotive", scrape_remotive),
-    ("superteam", scrape_superteam),
-    ("pasiflora", scrape_pasiflora),
-    ("themuse", scrape_themuse),
-    ("wizzhq", scrape_wizzhq),
-    ("dework", scrape_dework),
-    ("immunefi", scrape_immunefi),
-    ("web3career", scrape_web3career),
 )
 
 
-# Words in a title that mark it as an internship/fellowship, so items from
-# general sources (Superteam web3 bounties, Devpost, etc.) get surfaced under
-# the `internship` category too. Word-boundary matched to avoid false hits like
-# "international" or "internal".
-_INTERN_RE = re.compile(r"\b(intern|internship|fellowship|fellow|co-?op)\b", re.I)
-
-
-def _retag_internships(items):
-    """Retag an item's `type` to 'internship' when its title clearly names one.
-
-    Applied across all sources so web3 internships from Superteam/Devpost land
-    in the 🎓 category. Items already typed 'internship' (The Muse) are left
-    alone. Mutates and returns the same list.
-    """
-    for it in items:
-        if it.get("type") == "internship":
-            continue
-        if _INTERN_RE.search(it.get("title", "")):
-            it["type"] = "internship"
-    return items
+def _active_scrapers():
+    enabled = {x.strip().lower() for x in __import__("os").environ.get("TASKY_ENABLE_SCRAPERS", "").split(",") if x.strip()}
+    disabled = {x.strip().lower() for x in __import__("os").environ.get("TASKY_DISABLE_SCRAPERS", "").split(",") if x.strip()}
+    return _DEFAULT + tuple((name, fn) for name, fn in _OPTIONAL.items() if name in enabled and name not in disabled)
 
 
 def scrape_all():
     results = []
-    for name, fn in SCRAPERS:
+    try:
+        from . import db
+    except ImportError:
+        import db
+    db.init()
+    for name, fn in _active_scrapers():
         try:
             found = fn()
             results.extend(found)
+            db.record_source_run(name, len(found))
             print(f"[scraper] {name}: {len(found)} items")
         except Exception as e:  # never let one source kill the run
+            db.record_source_run(name, error=str(e))
             print(f"[scraper] {name} failed: {e}")
-    return _retag_internships(results)
+    return results
 
 
 if __name__ == "__main__":

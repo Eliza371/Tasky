@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Tasky — Telegram bot that monitors and instantly notifies subscribers of
-quick earning opportunities (crypto quests/bounties/airdrops, hackathons,
-freelance/dev bounties).
+quick earning opportunities (crypto quests, airdrops, bounties, hackathons).
 
 Setup:
   1. pip install python-telegram-bot requests beautifulsoup4
@@ -15,6 +14,7 @@ Requires python-telegram-bot v20+ (async API).
 
 import logging
 import os
+import asyncio
 
 from telegram import (
     BotCommand,
@@ -61,6 +61,7 @@ TOKEN = os.environ.get("TASKY_TOKEN", "PASTE_YOUR_BOTFATHER_TOKEN_HERE")
 
 # How often to scrape sources, in seconds.
 POLL_INTERVAL = int(os.environ.get("TASKY_POLL_INTERVAL", "300"))
+RETENTION_DAYS = int(os.environ.get("TASKY_RETENTION_DAYS", "90"))
 
 # Chat id of the admin who may mint codes and grant/revoke access. 0 = unset,
 # which disables all admin commands. Set TASKY_ADMIN_ID to your own chat id
@@ -94,10 +95,6 @@ CATEGORY_LABELS = {
     "crypto": "🪙 Crypto (quests/airdrops)",
     "hackathon": "💻 Hackathons",
     "bounty": "🎯 Bounties",
-    "bug_bounty": "🐛 Bug Bounties",
-    "freelance": "💼 Freelance/Tasks",
-    "creator": "🎨 Creator (UGC/content)",
-    "internship": "🎓 Internships",
 }
 
 
@@ -198,8 +195,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     await update.message.reply_text(
         "👋 Welcome to Tasky!\n\n"
-        "I monitor crypto quests, airdrops, bounties, hackathons and "
-        "freelance tasks, and notify you the moment new ones appear.\n\n"
+        "I monitor crypto quests, airdrops, bounties and hackathons, and "
+        "notify you when new ones appear.\n\n"
         f"🔒 This bot is invite-only. Your chat id is {chat_id} — tap the button "
         "below to copy it and send it to the admin to request access, or use "
         "/redeem YOUR_CODE if you have one.\n\n"
@@ -315,7 +312,7 @@ async def cmd_unsubscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_latest(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await _require_access(update):
         return
-    rows = db.get_new(limit=10)
+    rows = db.get_new(limit=10, categories=db.get_categories(update.effective_chat.id))
     if not rows:
         await update.message.reply_text("Nothing yet — check back soon.")
         return
@@ -410,6 +407,7 @@ async def cmd_redeem(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_gencode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Admin only: mint one or more single-use invite codes."""
     if not _is_admin(update):
+        await update.message.reply_text("Admin access required.")
         return
     n = 1
     if context.args:
@@ -432,6 +430,7 @@ async def cmd_gencode(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_codes(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Admin only: list unused invite codes."""
     if not _is_admin(update):
+        await update.message.reply_text("Admin access required.")
         return
     codes = db.list_unused_codes()
     if not codes:
@@ -446,6 +445,7 @@ async def cmd_codes(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_grant(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Admin only: grant access directly by chat id."""
     if not _is_admin(update):
+        await update.message.reply_text("Admin access required.")
         return
     if not context.args:
         await update.message.reply_text("Usage: /grant <chat_id>")
@@ -479,11 +479,28 @@ async def cmd_revoke(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"{target} didn't have access.")
 
 
+async def cmd_health(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin-only source health summary."""
+    if not _is_admin(update):
+        await update.message.reply_text("Admin access required.")
+        return
+    rows = db.get_source_health()
+    if not rows:
+        await update.message.reply_text("No source runs recorded yet.")
+        return
+    lines = []
+    for source, last_success, count, failures, error in rows:
+        state = f"failures={failures}" if failures else f"ok ({count})"
+        lines.append(f"{source}: {state}")
+    await update.message.reply_text("Source health:\n" + "\n".join(lines))
+
+
 # --- Background polling job --------------------------------------------------
 async def poll_job(context: ContextTypes.DEFAULT_TYPE):
     """Scrape sources, store new items, broadcast unnotified ones."""
     log.info("Polling sources...")
-    items = scrape_all()
+    # Scrapers are synchronous network clients; keep them off Telegram's event loop.
+    items = await asyncio.to_thread(scrape_all)
     new_count = 0
     for it in items:
         if db.insert(
@@ -493,31 +510,17 @@ async def poll_job(context: ContextTypes.DEFAULT_TYPE):
             new_count += 1
     log.info("Scraped %d items, %d new", len(items), new_count)
 
-    subscribers = db.get_subscribers()  # list of (chat_id, [categories])
-    unnotified = db.get_unnotified()
-    if not unnotified:
-        return
-
-    for row in unnotified:
-        # get_unnotified: id, title, url, source, type, currency, posted, deadline
-        task_id, title, url, source, type_ = row[0], row[1], row[2], row[3], row[4]
-        deadline = row[7]
+    for row in db.get_pending_deliveries():
+        task_id, title, url, source, type_, currency, posted, deadline, chat_id = row
         text = format_item(title, url, source, deadline)
-        for chat_id, cats in subscribers:
-            if type_ not in cats:
-                continue  # this subscriber didn't opt into this category
-            if not db.has_access(chat_id):
-                continue  # access was revoked since they subscribed
-            try:
-                await context.bot.send_message(
-                    chat_id=chat_id,
-                    text=text,
-                    parse_mode=ParseMode.MARKDOWN,
-                    disable_web_page_preview=True,
-                )
-            except Exception as e:
-                log.warning("Failed to message %s: %s", chat_id, e)
-        db.mark_notified(task_id)
+        try:
+            await context.bot.send_message(chat_id=chat_id, text=text,
+                parse_mode=ParseMode.MARKDOWN, disable_web_page_preview=True)
+            db.record_delivery(task_id, chat_id, True)
+        except Exception as e:
+            db.record_delivery(task_id, chat_id, False, e)
+            log.warning("Failed to message %s for task %s: %s", chat_id, task_id, e)
+    db.cleanup_old(RETENTION_DAYS)
 
 
 # Command menus shown in Telegram's "/" autocomplete. Public commands are
@@ -537,6 +540,7 @@ ADMIN_COMMANDS = PUBLIC_COMMANDS + [
     BotCommand("codes", "List unused invite codes"),
     BotCommand("grant", "Grant access by chat id"),
     BotCommand("revoke", "Revoke access by chat id"),
+    BotCommand("health", "Show scraper health"),
 ]
 
 
@@ -571,6 +575,7 @@ def main():
     app.add_handler(CommandHandler("codes", cmd_codes))
     app.add_handler(CommandHandler("grant", cmd_grant))
     app.add_handler(CommandHandler("revoke", cmd_revoke))
+    app.add_handler(CommandHandler("health", cmd_health))
     app.add_handler(CallbackQueryHandler(on_category_button))
 
     # Schedule the poll loop. first=5 runs one scrape shortly after startup.
