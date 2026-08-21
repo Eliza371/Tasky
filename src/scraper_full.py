@@ -808,7 +808,6 @@ def scrape_zealy(communities=None, limit=50):
 #   reddit    — RSS; rate-limited (429) from datacenter/cloud IPs, best-effort
 _OPTIONAL = {
     "reddit": scrape_reddit,
-    "superteam": scrape_superteam,
     "wizzhq": scrape_wizzhq,
     "dework": scrape_dework,
     "telegram": scrape_telegram,

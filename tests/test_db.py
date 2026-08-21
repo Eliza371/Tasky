@@ -48,3 +48,14 @@ def test_categories_are_validated(test_workspace, monkeypatch):
     db.init()
     db.add_subscriber(10, ["bounty", "bogus"])
     assert db.get_categories(10) == ["bounty"]
+
+
+def test_pending_delivery_filters_retired_sources(test_workspace, monkeypatch):
+    db = load_db(test_workspace, monkeypatch)
+    db.init()
+    db.grant_access(10)
+    db.add_subscriber(10, ["crypto", "hackathon"])
+    db.insert("Old crypto", "https://example.test/old", "reddit/r/web3", "crypto")
+    db.insert("Current hackathon", "https://example.test/new", "devpost", "hackathon")
+    pending = db.get_pending_deliveries(["devpost"])
+    assert [(row[3], row[4]) for row in pending] == [("devpost", "hackathon")]

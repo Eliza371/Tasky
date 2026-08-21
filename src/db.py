@@ -56,6 +56,10 @@ def init():
             "ALTER TABLE subscribers ADD COLUMN categories TEXT "
             "DEFAULT 'crypto,hackathon,bounty'"
         )
+    # Remove categories retired from the product from existing subscriptions.
+    for chat_id, categories in c.execute("SELECT chat_id, categories FROM subscribers").fetchall():
+        clean = ",".join(x for x in (categories or "").split(",") if x in CATEGORIES)
+        c.execute("UPDATE subscribers SET categories=? WHERE chat_id=?", (clean, chat_id))
     # Invite-only gating. `access` records which chats may use the bot;
     # `invite_codes` holds single-use codes (used_by is NULL until redeemed).
     c.execute(
@@ -190,9 +194,17 @@ def mark_notified(task_id):
     conn.close()
 
 
-def get_pending_deliveries():
+def get_pending_deliveries(sources=None):
     """Return unsent task/subscriber pairs that currently match and have access."""
     conn = _connect()
+    source_clause = ""
+    source_params = []
+    if sources:
+        patterns = []
+        for source in sources:
+            patterns.append("(t.source = ? OR t.source LIKE ?)")
+            source_params.extend((source, source + "/%"))
+        source_clause = " AND (" + " OR ".join(patterns) + ")"
     rows = conn.execute(
         """SELECT t.id, t.title, t.url, t.source, t.type, t.currency,
                   t.posted, t.deadline, s.chat_id
@@ -203,8 +215,9 @@ def get_pending_deliveries():
            LEFT JOIN deliveries d ON d.task_id = t.id AND d.chat_id = s.chat_id
            WHERE d.sent_at IS NULL
              AND t.posted >= s.added
+             AND t.type IN ('crypto', 'hackathon', 'bounty')
              AND (t.deadline IS NULL OR t.deadline >= date('now'))
-           ORDER BY t.posted ASC"""
+           """ + source_clause + " ORDER BY t.posted ASC""", source_params
     ).fetchall()
     conn.close()
     return rows

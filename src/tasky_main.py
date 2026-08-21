@@ -50,10 +50,10 @@ except ImportError:
 # Support running both as `python src/tasky_main.py` and `python -m src.tasky_main`.
 try:
     from . import db
-    from .scraper_full import scrape_all
+    from .scraper_full import _active_scrapers, scrape_all
 except ImportError:  # run directly as a script
     import db
-    from scraper_full import scrape_all
+    from scraper_full import _active_scrapers, scrape_all
 
 # --- Configuration ----------------------------------------------------------
 # Prefer the environment variable; fall back to the literal below.
@@ -510,7 +510,10 @@ async def poll_job(context: ContextTypes.DEFAULT_TYPE):
             new_count += 1
     log.info("Scraped %d items, %d new", len(items), new_count)
 
-    for row in db.get_pending_deliveries():
+    # Only deliver items from scrapers enabled for this running process. This
+    # prevents historical rows from retired sources being sent after a deploy.
+    active_sources = [name for name, _ in _active_scrapers()]
+    for row in db.get_pending_deliveries(active_sources):
         task_id, title, url, source, type_, currency, posted, deadline, chat_id = row
         text = format_item(title, url, source, deadline)
         try:
